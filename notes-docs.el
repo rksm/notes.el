@@ -1,142 +1,17 @@
 ;; -*- no-byte-compile: t; -*-
 
-;; - [ ] delete doc
-;; - [ ] create doc
-;; - [ ] save doc
+;; - [X] delete doc
+;; - [X] create doc
+;; - [X] save doc
 ;; - [X] search throigh docs
 ;; - [X] list docs
 ;; - [X] list docs by date
+;; - [ ] autoloads
+;; - [ ] package
+;; - [ ] tests
 
 
 (require 'sofa)
-
-(setq sofa-server "sofa.kra.hn"
-      sofa-port 443
-      sofa-use-https t
-      sofa-limit)
-
-(defcustom notes.el-default-db "notes-from-lively"
-  "The default database of `sofa-server' to use for notes"
-  :type 'string
-  :group 'notes.el)
-
-(comment
-
- (sofa-database-exist-p db)
-
- (setq info (sofa-get-database-info db))
-
- (pp info)
-
- (sofa-get-bulk-documents db )
-
-
- (setq doc-ids
-       (let* ((json (sofa-get (sofa-view-endpoint db nil nil :include-docs t)))
-              (err (assoc-value "error" json nil))
-              (rows (assoc-value "rows" json nil)))
-	 (->> rows
-	      (seq-map (lambda (ea) (assoc-value "id" ea)))
-	      (-reject (lambda (ea) (s-starts-with? "_" ea))))))
-
-
-
-
- (-filter '---truthy? (seq-uniq (seq-map (lambda (doc) (notes.el-get-doc-attr doc "content" "mode")) docs)))
-
- (notes.el-get-doc-attr (car docs) "_id")
- (notes.el-get-doc-attr (car docs) "content" "mode")
-
- (funcall 'fundamental-mode)
- (setq doc-id (car doc-ids))
- (setq doc (sofa-get-document db doc-id))
-
- (helm-build-sync-source "test"
-   :candidates '(a b c d e))
-
- volatile
-
- (helm :sources (helm-build-sync-source "Major modes" :candidates (list-major-modes)))
-
-
- (helm :sources
-       `(,(helm-build-dummy-source
-	      "New note"
-	    :action (helm-make-actions
-		     "Create note"
-		     (lambda (candidate)
-		       (message "creating note %s" candidate)
-		       ;; (switch-to-buffer buffer)
-		       )))
-	 ,(helm-build-sync-source "notes.el list"
-	    :candidates doc-ids
-	    :action 'notes.el-open-doc-named))
-       :buffer "*helm notes.el source*")
-
-
- (setq doc-id "SQL Postgres")
-
- ;; (makunbound 'doc)
- ;; (makunbound 'content)
- ;; (makunbound 'mode)
- ;; (makunbound 'doc-buffer)
-
- (assoc-value "content" doc)
-
- (notes.el-get-doc-attr doc "content" "mode")
- (notes.el-create-doc "test-doc-1")
-
- (setq notes.el-database-doc-cache (remove* notes.el-default-db notes.el-database-doc-cache :test 'equal :key 'car))
- (length notes.el--database-cache)
-
-
- (car docs)
- (assoc "_rev" (car docs))
-
-
- (push (pairlis '(notes.el-default-db) '(1)) -notes-database-doc-cache)
-
- (notes.el--cache-clear!)
- (setq docs (notes.el-get-all-docs))
- 
- (setq ts (assoc-value "timestamp" (car docs)))
-
- (format-time-string "%Y-%m-%d %H:%M:%S" (rk/msecs-to-time ts))
- 
-
- (setq test-doc `(("_id" . "test-doc-from-emacs")
-		  ("_rev" . ,(assoc-value "_rev" (notes.el-get-doc "test-doc-from-emacs")))
-		  ("name" . "test-doc-from-emacs")
-		  ("timestamp" . (rk/time-in-msecs))
-		  ("content"
-		   ("textAndAttributes" . ["foo barrrr bax 2" nil])
-		   ("mode" . "md"))))
-
- (notes.el--set-document test-doc)
-
- (setq rev (sofa-put-document notes.el-default-db (assoc-value "_id" test-doc) test-doc rev))
-
- ("_id" . "-- TODO --")
-
- (notes.el-create-doc "test-doc-1")
-
- (setq cache (assoc-value notes.el-default-db notes.el-database-doc-cache))
- (assoc-value notes.el-default-db notes.el-database-doc-cache)
- (let* ((cache (assoc-value notes.el-default-db notes.el-database-doc-cache))
-	(found (assoc-value (assoc "_id" test-doc) cache)))
-   (when found (setq cache (delq found cache)))
-   (push test-doc cache)
-   )
-
- (notes.el-delete-doc "test-doc-from-emacs")
-
- (sofa-document-revision notes.el-default-db "test-doc-from-emacs")
-
- )
-
-
-;; -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
-
 (require 'cl-lib)
 
 (defvar notes.el-mode-map
@@ -144,10 +19,19 @@
     ("c_cpp" . c++-mode)
     ("clojure" . clojure-mode)))
 
+(defvar notes.el--current-doc nil
+  "Local variable set in buffers used to edit notes.")
+(make-variable-buffer-local 'notes.el--current-doc)
+(put 'notes.el--current-doc 'permanent-local t)
+
+(defvar notes.el--database-cache nil
+  "Cache for the documents of the default database.")
+
 (defun notes.el-lookup-mode (mode-name)
   (or
    (assoc-value mode-name notes.el-mode-map)
    (assoc-default (concat "." mode-name) auto-mode-alist 'string-match)
+   (symbol-function (intern-soft mode-name))
    'fundamental-mode))
 
 (defmacro notes.el-get-doc-attr (doc &rest attrs)
@@ -155,6 +39,13 @@
   e.g. (notes.el-get-doc-attr doc \"content\" \"mode\")"
   `(->> ,doc
 	,@(seq-map (lambda (sym) `(assoc-value ,sym)) attrs)))
+
+(defun notes.el--doc-id (doc)
+  ""
+  (or
+   (assoc-value "_id" doc)
+   (assoc-value "name" doc)
+   (error "doc does not have an id")))
 
 (defun notes.el-get-doc (doc-id &optional database)
   (or (notes.el--cache-get-doc doc-id database)
@@ -165,9 +56,6 @@
 	(unless doc (error "failed to retrieve document %s" doc-id))
 	(notes.el--cache-add-doc doc database)
 	doc)))
-
-(defvar notes.el--database-cache nil)
-;; (setq notes.el--database-cache nil)
 
 (cl-defun notes.el-create-doc (name &optional database
 				    &key
@@ -180,23 +68,38 @@
 		   ("createdAt" . ,timestamp)
 		   ("content"
 		    ("textAndAttributes" . [,content nil])
-		    ("mode" . "md")))))
+		    ("mode" . (if (stringp mode) mode (prin1-to-string mode)))))))
     (condition-case err
 	(let ((rev (assoc-value "_rev" (notes.el-get-doc name database))))
 	  (setq new-doc (append new-doc `(("_rev" . ,rev)))))
-      (error (message "hmmmm %s" err)))
+      (error))
     (notes.el--set-document new-doc database)))
 
 (defun notes.el--set-document (doc &optional database)
   ;; 1. PUT document
   (let* ((db (or database notes.el-default-db))
-	 (doc-id (assoc-value "_id" doc))
+	 (doc-id (notes.el--doc-id doc))
 	 (old-rev (assoc-value "_rev" doc))
 	 (new-rev (sofa-put-document db doc-id doc))
-	 (new-doc (rk/alist-put "_rev" new-rev test-doc)))
+	 (new-doc (->> doc
+		   (rk/alist-put "_rev" new-rev)
+		   (rk/alist-put "timestamp" (rk/time-in-msecs)))))
 
     ;; 2. update cache
     (notes.el--cache-add-doc new-doc db)
+
+    ;; 3. update any notes.el note list buffers
+    (let ((buffers
+	   (seq-filter (lambda (b) (equal "*notes.el*" (buffer-name b))) (buffer-list))))
+      (dolist (buf (buffer-list))
+	(when (equal "*notes.el*" (buffer-name buf))
+	  (with-current-buffer buf
+	    (seq-do
+	     (lambda (item)
+	       (when (->> item (gethash :doc) (notes.el--doc-id) (equal doc-id))
+		 (puthash :doc new-doc item)))
+	     notes.el-widgets-rendered-items)))))
+
     new-doc))
 
 (defun notes.el--cache-get-doc (doc-id &optional database)
@@ -208,18 +111,16 @@
   (let* ((db (or database notes.el-default-db))
 	 (cached-docs (assoc-value db notes.el--database-cache)))
     (when cached-docs
-      (notes.el--change-cache! db (append doc cached-docs)))))
+      (notes.el--change-cache! db (append (list doc) cached-docs)))))
 
 (defun notes.el--cache-remove-doc (doc-or-id &optional database)
   (let* ((db (or database notes.el-default-db))
 	 (cached-docs (assoc-value db notes.el--database-cache))
-	 (doc-id (if (stringp doc-or-id) doc-or-id (assoc-value "_id" doc-or-id))))
+	 (doc-id (if (stringp doc-or-id) doc-or-id (notes.el--doc-id doc-or-id))))
     (when cached-docs
-      (let ((id-pair `("_id" . ,doc-id)))
-	(notes.el--change-cache!
-	 db
-	 (--> cached-docs
-	      (remove* id-pair it :test 'equal :key 'car)))))))
+      (notes.el--change-cache!
+       db
+       (seq-remove (lambda (doc) (equal doc-id (notes.el--doc-id doc))) cached-docs)))))
 
 (defun notes.el--cache-clear! ()
   (setq notes.el--database-cache nil))
@@ -256,10 +157,9 @@
 
 (defun notes.el-delete-doc (doc-or-id &optional database)
   (notes.el--cache-remove-doc doc-or-id database)
-  (let ((doc-id (if (stringp doc-or-id) doc-or-id (assoc-value "_id" doc-or-id)))
+  (let ((doc-id (if (stringp doc-or-id) doc-or-id (notes.el--doc-id doc-or-id)))
 	(database (or database notes.el-default-db)))
     (sofa-delete-document database doc-id)))
-
 
 (defun notes.el-open-doc-named (doc-id &optional doc database)
   "docstring"
@@ -270,19 +170,37 @@
     (with-current-buffer doc-buffer
       (funcall mode)
       (notes.el-mode)
+      (setq notes.el--current-doc doc)
       (save-excursion (insert content))
       (set-buffer-modified-p nil)
-      (pop-to-buffer doc-buffer))))
+      (switch-to-buffer doc-buffer))))
 
 (defun notes.el-mode-save-buffer ()
   (message "Saving notes of %s..." (buffer-name))
-  (set-buffer-modified-p nil)
+  (when (buffer-modified-p)
+    (let* ((content
+	    (save-restriction
+	      (widen)
+	      (buffer-substring-no-properties (point-min) (point-max))))
+	   (mode (symbol-name major-mode))
+	   (doc notes.el--current-doc)
+	   (changed-doc (--> doc
+			     (assoc-value "content" it)
+			     (rk/alist-put "textAndAttributes" `[,content nil] it)
+			     (rk/alist-put "mode" mode it)
+			     (rk/alist-put "content" it doc)
+			     (notes.el--set-document it))))
+      (setq notes.el--current-doc changed-doc))
+    (message "Saved!")
+    (set-buffer-modified-p nil))
   t)
+(put 'notes.el-mode-save-buffer 'permanent-local-hook t)
 
 (defun notes.el-mode-really-kill-buffer ()
   (if (buffer-modified-p)
-    (yes-or-no-p (format "Kill modified buffer %s? " (buffer-name)))
+      (yes-or-no-p (format "Kill modified buffer %s? " (buffer-name)))
     t))
+(put 'notes.el-mode-really-kill-buffer 'permanent-local-hook t)
 
 (define-minor-mode notes.el-mode
   "Notes from my notes db, https://sofa.kra.hn/notes-from-lively"
@@ -290,10 +208,10 @@
   :lighter " notes.el"
   :keymap
   :group 'notes.el
-  (make-variable-buffer-local 'write-contents-functions)
-  (make-variable-buffer-local 'notes.el-mode-really-kill-buffer)
-  (setq-local write-contents-functions '(notes.el-mode-save-buffer))
-  (setq-local kill-buffer-query-functions '(notes.el-mode-really-kill-buffer)))
+  ;; note: all those vars and hooks are permanent-local, i.e. that they aren't
+  ;; reset on mode changes and `kill-all-local-variables'
+  (add-hook 'write-contents-functions 'notes.el-mode-save-buffer nil t)
+  (add-hook 'kill-buffer-query-functions 'notes.el-mode-really-kill-buffer nil t))
 
 
 (provide 'notes-docs)
