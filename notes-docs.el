@@ -68,7 +68,7 @@
 		   ("createdAt" . ,timestamp)
 		   ("content"
 		    ("textAndAttributes" . [,content nil])
-		    ("mode" . (if (stringp mode) mode (prin1-to-string mode)))))))
+		    ("mode" . ,(if (stringp mode) mode (prin1-to-string mode)))))))
     (condition-case err
 	(let ((rev (assoc-value "_rev" (notes.el-get-doc name database))))
 	  (setq new-doc (append new-doc `(("_rev" . ,rev)))))
@@ -168,7 +168,9 @@
 	 (mode (notes.el-lookup-mode (notes.el-get-doc-attr doc "content" "mode")))
 	 (doc-buffer (rk/get-fresh-buffer (concat "*rk/notes \"" doc-id "\" "))))
     (with-current-buffer doc-buffer
-      (funcall mode)
+      (condition-case err
+       (funcall mode)
+       (error (message "Could not activate mode %s b/c %s" mode err)))
       (notes.el-mode)
       (setq notes.el--current-doc doc)
       (save-excursion (insert content))
